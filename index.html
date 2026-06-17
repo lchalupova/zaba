@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Obrácený Žabák (Frogger Reverse)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0, 250, 150, 0.3);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        #ui {
+            width: 800px;
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: #222;
+            box-sizing: border-box;
+            border-bottom: 3px solid #333;
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .lives {
+            color: #ff4757;
+        }
+
+        .score {
+            color: #2ed573;
+        }
+
+        .powerup-status {
+            color: #ffa502;
+            min-width: 150px;
+            text-align: right;
+        }
+
+        canvas {
+            background: #111;
+            display: block;
+        }
+
+        #screen-overlay {
+            position: absolute;
+            top: 44px; /* Výška UI */
+            left: 0;
+            width: 800px;
+            height: 600px;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        h1 {
+            color: #2ed573;
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px rgba(46, 213, 115, 0.5);
+        }
+
+        p {
+            font-size: 18px;
+            margin-bottom: 30px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        button {
+            background: #2ed573;
+            border: none;
+            color: #111;
+            padding: 15px 30px;
+            font-size: 22px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: 0.2s;
+            font-family: inherit;
+        }
+
+        button:hover {
+            background: #26af5f;
+            transform: scale(1.05);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="ui">
+        <div class="lives">Životy: <span id="lives-count">♥♥♥</span></div>
+        <div class="score">Skóre: <span id="score-val">0</span></div>
+        <div class="powerup-status" id="powerup-text">Aktivní: Žádný</div>
+    </div>
+    
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="screen-overlay">
+        <h1 id="overlay-title">ŽÁBÍ PŘECHOD</h1>
+        <p id="overlay-desc">Dostaň se shora dolů do bezpečné vody!<br>Pozor na naštvaná auta a mizející lekníny.<br>Sbírej mouchy pro superschopnosti.<br><br>Ovládání: ŠIPKY</p>
+        <button id="start-btn">HRÁT</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// UI elementy
+const livesCount = document.getElementById('lives-count');
+const scoreVal = document.getElementById('score-val');
+const powerupText = document.getElementById('powerup-text');
+const screenOverlay = document.getElementById('screen-overlay');
+const overlayTitle = document.getElementById('overlay-title');
+const overlayDesc = document.getElementById('overlay-desc');
+const startBtn = document.getElementById('start-btn');
+
+// Herní konstanty a stavy
+const ROW_HEIGHT = 50;
+let gameRunning = false;
+let score = 0;
+let lives = 3;
+
+// Definice zón (Y souřadnice)
+const START_ZONE_END = 100;
+const ROAD_START = 100;
+const ROAD_END = 450;
+const WATER_START = 450;
+const WATER_END = 550;
+
+// Objekt žáby
+let frog = {
+    x: 400,
+    y: 25,
+    radius: 15,
+    speed: 5,
+    reset: function() {
+        this.x = 400;
+        this.y = 25;
+    }
+};
+
+// Klávesnice
+let keys = {};
+window.addEventListener('keydown', e => keys[e.code] = true);
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+// Třída pro auta
+class Car {
+    constructor(row, direction) {
+        this.row = row; // 0 až 6
+        this.direction = direction; // 1 = doprava, -1 = doleva
+        this.y = ROAD_START + row * ROW_HEIGHT + 5;
+        this.width = 60 + Math.random() * 20;
+        this.height = 40;
+        this.x = direction === 1 ? -this.width : canvas.width;
+        
+        // Základní rychlost + náhodný faktor podle řádku
+        this.speed = (3 + row * 0.5 + Math.random() * 1.5) * direction;
+        
+        // Speciální agresivní auto? (Šance 15%)
+        this.isAngry = Math.random() < 0.15;
+        if (this.isAngry) {
+            this.speed *= 2.2;
+            this.color = '#ff4757'; // Jasně červená pro agresivní řidiče
+            this.beeped = false;
+        } else {
+            const colors = ['#1e90ff', '#ffa502', '#70a1ff', '#ffffff'];
+            this.color = colors[Math.floor(Math.random() * colors.length)];
+        }
+    }
+
+    update() {
+        this.x += this.speed;
+
+        // Vizuální troubení naštvaného auta, když se blíží k prostředku
+        if (this.isAngry && !this.beeped && ((this.direction === 1 && this.x > 200) || (this.direction === -1 && this.x < 600))) {
+            this.beeped = true;
+            this.showBeep = 30; // počet framů, po které text zůstane
+        }
+    }
+
+    draw() {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        
+        // Kola
+        ctx.fillStyle = '#000';
+        ctx.fillRect(this.x + 10, this.y - 3, 12, 4);
+        ctx.fillRect(this.x + this.width - 22, this.y - 3, 12, 4);
+        ctx.fillRect(this.x + 10, this.y + this.height, 12, 4);
+        ctx.fillRect(this.x + this.width - 22, this.y + this.height, 12, 4);
+
+        // Okna
+        ctx.fillStyle = '#eccc68';
+        if (this.direction === 1) {
+            ctx.fillRect(this.x + this.width - 15, this.y + 5, 8, this.height - 10);
+        } else {
+            ctx.fillRect(this.x + 7, this.y + 5, 8, this.height - 10);
+        }
+
+        // BEEP efekt
+        if (this.isAngry && this.showBeep > 0) {
+            ctx.fillStyle = '#ff4757';
+            ctx.font = 'bold 16px Courier New';
+            ctx.fillText("BEEP!!", this.x + (this.direction === 1 ? this.width : -50), this.y - 5);
+            this.showBeep--;
+        }
+    }
+}
+
+// Třída pro mizející lekníny
+class Lilypad {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 22;
+        this.state = 'visible'; // visible, sinking, hidden, rising
+        this.timer = Math.random() * 200;
+    }
+
+    update() {
+        this.timer++;
+        if (this.timer > 180) {
+            this.timer = 0;
+            if (this.state === 'visible') this.state = 'sinking';
+            else if (this.state === 'hidden') this.state = 'rising';
+        }
+
+        if (this.state === 'sinking' && this.timer > 30) this.state = 'hidden';
+        if (this.state === 'rising' && this.timer > 30) this.state = 'visible';
+    }
+
+    draw() {
+        if (this.state === 'hidden') return;
+
+        ctx.beginPath();
+        if (this.state === 'sinking') ctx.fillStyle = 'rgba(46, 204, 113, 0.4)';
+        else if (this.state === 'rising') ctx.fillStyle = 'rgba(46, 204, 113, 0.6)';
+        else ctx.fillStyle = '#2ecc71';
+
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 1.7); // Výřez jako u leknínu
+        ctx.lineTo(this.x, this.y);
+        ctx.fill();
+        ctx.closePath();
+    }
+}
+
+// Třída pro bonusové Mouchy
+class Fly {
+    constructor() {
+        this.x = 50 + Math.random() * 700;
+        this.y = ROAD_START + Math.floor(Math.random() * 7) * ROW_HEIGHT + 25;
+        this.radius = 8;
+        this.pulse = 0;
+    }
+
+    draw() {
+        this.pulse += 0.1;
+        let glow = this.radius + Math.sin(this.pulse) * 4;
+
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(255, 242, 0, 0.4)';
+        ctx.arc(this.x, this.y, glow, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = '#ffa502';
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+// Pole objektů
+let cars = [];
+let lilypads = [];
+let fly = null;
+let spawnTimer = 0;
+
+// Power-up stavy
+let activePowerup = null; // 'speed', 'shield'
+let powerupTimer = 0;
+
+function initGame() {
+    score = 0;
+    lives = 3;
+    cars = [];
+    fly = new Fly();
+    activePowerup = null;
+    powerupTimer = 0;
+    frog.reset();
+    
+    // Inicializace leknínů
+    lilypads = [];
+    for (let i = 0; i < 6; i++) {
+        lilypads.push(new Lilypad(80 + i * 130, WATER_START + 25));
+        lilypads.push(new Lilypad(40 + i * 130, WATER_START + 75));
+    }
+
+    updateUI();
+}
+
+function updateUI() {
+    scoreVal.innerText = score;
+    livesCount.innerText = "♥".repeat(lives) + "  ".repeat(3 - lives);
+    
+    if (activePowerup === 'speed') {
+        powerupText.innerText = `⚡ Rychlost (${Math.ceil(powerupTimer / 60)}s)`;
+        powerupText.style.color = '#ffda79';
+    } else if (activePowerup === 'shield') {
+        powerupText.innerText = `🛡️ Štít (${Math.ceil(powerupTimer / 60)}s)`;
+        powerupText.style.color = '#7efff5';
+    } else {
+        powerupText.innerText = "Aktivní: Žádný";
+        powerupText.style.color = '#ffa502';
+    }
+}
+
+// Pohyb žáby
+function handleFrogInput() {
+    let currentSpeed = frog.speed;
+    if (activePowerup === 'speed') currentSpeed *= 1.8;
+
+    if (keys['ArrowUp'] && frog.y - frog.radius > 0) frog.y -= currentSpeed;
+    if (keys['ArrowDown'] && frog.y + frog.radius < canvas.height) frog.y += currentSpeed;
+    if (keys['ArrowLeft'] && frog.x - frog.radius > 0) frog.x -= currentSpeed;
+    if (keys['ArrowRight'] && frog.x + frog.radius < canvas.width) frog.x += currentSpeed;
+}
+
+// Logika kolizí obdélník s kruhem
+function checkCollision(rect, circle) {
+    let closestX = Math.max(rect.x, Math.min(circle.x, rect.x + rect.width));
+    let closestY = Math.max(rect.y, Math.min(circle.y, rect.y + rect.height));
+    let distanceX = circle.x - closestX;
+    let distanceY = circle.y - closestY;
+    let distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
+    return distanceSquared < (circle.radius * circle.radius);
+}
+
+// Hlavní herní smyčka
+function gameLoop() {
+    if (!gameRunning) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // --- KRESLENÍ PROSTŘEDÍ ---
+    // Horní bezpečná tráva
+    ctx.fillStyle = '#2ed573';
+    ctx.fillRect(0, 0, canvas.width, START_ZONE_END);
+
+    // Silnice
+    ctx.fillStyle = '#2f3542';
+    ctx.fillRect(0, ROAD_START, canvas.width, ROAD_END - ROAD_START);
+    // Čáry na silnici
+    ctx.strokeStyle = '#eccc68';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([20, 20]);
+    for (let i = 1; i < 7; i++) {
+        ctx.beginPath();
+        ctx.moveTo(0, ROAD_START + i * ROW_HEIGHT);
+        ctx.lineTo(canvas.width, ROAD_START + i * ROW_HEIGHT);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Řeka dole
+    ctx.fillStyle = '#1e90ff';
+    ctx.fillRect(0, WATER_START, canvas.width, WATER_END - WATER_START);
+
+    // Bezpečný cílový břeh úplně dole
+    ctx.fillStyle = '#26af5f';
+    ctx.fillRect(0, WATER_END, canvas.width, 50);
+
+    // --- AKTUALIZACE OBJEKTŮ ---
+    // Generování aut
+    spawnTimer++;
+    if (spawnTimer > 35) {
+        let randomRow = Math.floor(Math.random() * 7);
+        let direction = randomRow % 2 === 0 ? 1 : -1;
+        cars.push(new Car(randomRow, direction));
+        spawnTimer = 0;
+    }
+
+    // Updatování aut
+    cars.forEach((car, index) => {
+        car.update();
+        car.draw();
+
+        // Smazání auta mimo obrazovku
+        if (car.direction === 1 && car.x > canvas.width + 100) cars.splice(index, 1);
+        if (car.direction === -1 && car.x < -100 - car.width) cars.splice(index, 1);
+
+        // Kolize s autem
+        if (checkCollision(car, frog)) {
+            if (activePowerup !== 'shield') {
+                lives--;
+                updateUI();
+                frog.reset();
+                if (lives <= 0) {
+                    gameOver();
+                }
+            }
+        }
+    });
+
+    // Lekníny
+    let onLilypad = false;
+    lilypads.forEach(lily => {
+        lily.update();
+        lily.draw();
+
+        // Kontrola, jestli stojíme na leknínu (pouze pokud jsme v řece)
+        if (frog.y >= WATER_START && frog.y <= WATER_END) {
+            let dist = Math.hypot(frog.x - lily.x, frog.y - lily.y);
+            if (dist < lily.radius + 5 && lily.state === 'visible') {
+                onLilypad = true;
+            }
+        }
+    });
+
+    // Kontrola utonutí v řece
+    if (frog.y >= WATER_START && frog.y <= WATER_END && !onLilypad) {
+        lives--;
+        updateUI();
+        frog.reset();
+        if (lives <= 0) gameOver();
+    }
+
+    // Moucha (Power-up)
+    if (fly) {
+        fly.draw();
+        let distToFly = Math.hypot(frog.x - fly.x, frog.y - fly.y);
+        if (distToFly < frog.radius + fly.radius) {
+            activePowerup = Math.random() < 0.5 ? 'speed' : 'shield';
+            powerupTimer = 180; // 3 sekundy při 60 FPS
+            fly = null;
+            updateUI();
+        }
+    } else if (Math.random() < 0.005) { // Šance na novou mouchu
+        fly = new Fly();
+    }
+
+    // Odpočet power-upu
+    if (activePowerup) {
+        powerupTimer--;
+        if (powerupTimer % 60 === 0) updateUI(); // Update textu každou sekundu
+        if (powerupTimer <= 0) {
+            activePowerup = null;
+            updateUI();
+        }
+    }
+
+    // Pohyb a vykreslení žáby
+    handleFrogInput();
+    
+    // Vykreslení žáby
+    ctx.beginPath();
+    ctx.fillStyle = activePowerup === 'shield' ? '#7efff5' : '#2ecc71';
+    ctx.arc(frog.x, frog.y, frog.radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Oči žáby
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(frog.x - 6, frog.y - 10, 5, 0, Math.PI * 2);
+    ctx.arc(frog.x + 6, frog.y - 10, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(frog.x - 6, frog.y - 10, 2, 0, Math.PI * 2);
+    ctx.arc(frog.x + 6, frog.y - 10, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Efekt štítu
+    if (activePowerup === 'shield') {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(126, 255, 245, 0.6)';
+        ctx.lineWidth = 4;
+        ctx.arc(frog.x, frog.y, frog.radius + 6, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // --- KONTROLA VÍTĚZSTVÍ KOLA ---
+    if (frog.y > WATER_END + 10) {
+        score++;
+        updateUI();
+        frog.reset();
+        // Zrychlíme hru vyčištěním starých aut pro novou vlnu
+        cars = [];
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+function gameOver() {
+    gameRunning = false;
+    screenOverlay.classList.remove('hidden');
+    overlayTitle.innerText = "GAME OVER";
+    overlayTitle.style.color = "#ff4757";
+    overlayDesc.innerHTML = `Auta tě dostala.<br><br><strong>Dosažené skóre: ${score}</strong>`;
+    startBtn.innerText = "HRÁT ZNOVU";
+}
+
+// Spouštěč hry
+startBtn.addEventListener('click', () => {
+    screenOverlay.classList.add('hidden');
+    initGame();
+    if (!gameRunning) {
+        gameRunning = true;
+        gameLoop();
+    }
+});
+</script>
+
+</body>
+</html>
